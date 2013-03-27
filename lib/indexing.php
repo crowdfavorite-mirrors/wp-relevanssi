@@ -39,7 +39,7 @@ function relevanssi_build_index($extend = false) {
 			}
 		}
 
-        $q = "SELECT post.ID
+        $q = "SELECT DISTINCT(post.ID)
 		FROM $wpdb->posts parent, $wpdb->posts post WHERE
         (parent.post_status IN ('publish', 'draft', 'private', 'pending', 'future'))
         AND (
@@ -47,6 +47,9 @@ function relevanssi_build_index($extend = false) {
             AND post.post_parent=parent.ID)
             OR
             (parent.ID=post.ID)
+            OR
+			(post.post_status='inherit'
+            AND post.post_parent=0)
         )
 		$restriction";
 		update_option('relevanssi_index', '');
@@ -58,7 +61,7 @@ function relevanssi_build_index($extend = false) {
 			$size = $limit;
 			$limit = " LIMIT $limit";
 		}
-        $q = "SELECT post.ID
+        $q = "SELECT DISTINCT(post.ID)
 		FROM $wpdb->posts parent, $wpdb->posts post WHERE
         (parent.post_status IN ('publish', 'draft', 'private', 'pending', 'future'))
         AND (
@@ -66,12 +69,16 @@ function relevanssi_build_index($extend = false) {
             AND post.post_parent=parent.ID)
             OR
             (parent.ID=post.ID)
+            OR
+			(post.post_status='inherit'
+            AND post.post_parent=0)
         )
 		AND post.ID NOT IN (SELECT DISTINCT(doc) FROM $relevanssi_table) $restriction $limit";
 	}
 
 	$custom_fields = relevanssi_get_custom_fields();
 
+	do_action('relevanssi_pre_indexing_query');
 	$content = $wpdb->get_results($q);
 	
 	foreach ($content as $post) {
@@ -214,25 +221,7 @@ function relevanssi_index_doc($indexpost, $remove_first = false, $custom_fields 
 	} //Added by OdditY END <-
 
 
-	$taxonomies = array();
-	//Added by OdditY - INDEX TAGs of the POST ->
-	if ("on" == get_option("relevanssi_include_tags")) {
-		array_push($taxonomies, "post_tag");
-	} // Added by OdditY END <- 
-
-	$custom_taxos = get_option("relevanssi_custom_taxonomies");
-	if ("" != $custom_taxos) {
-		$cts = explode(",", $custom_taxos);
-		foreach ($cts as $taxon) {
-			$taxon = trim($taxon);
-			array_push($taxonomies, $taxon);
-		}
-	}
-
-	// index categories
-	if ("on" == get_option("relevanssi_include_cats")) {
-		array_push($taxonomies, 'category');
-	}
+	$taxonomies = get_option("relevanssi_index_taxonomies_list");
 
 	// Then process all taxonomies, if any.
 	foreach ($taxonomies as $taxonomy) {
@@ -316,8 +305,32 @@ function relevanssi_index_doc($indexpost, $remove_first = false, $custom_fields 
 			
 		if ('on' == get_option('relevanssi_expand_shortcodes')) {
 			if (function_exists("do_shortcode")) {
+				// WP Table Reloaded support
+				if (defined('WP_TABLE_RELOADED_ABSPATH')) {
+					include_once(WP_TABLE_RELOADED_ABSPATH . 'controllers/controller-frontend.php');
+					$My_WP_Table_Reloaded = new WP_Table_Reloaded_Controller_Frontend();
+				}
+				// TablePress support
+				if (defined('TABLEPRESS_ABSPATH')) {
+					include_once(TABLEPRESS_ABSPATH . 'controllers/controller-frontend.php');
+					$My_WP_Table_Reloaded = new TablePress_Frontend_Controller();
+					$My_WP_Table_Reloaded->init_shortcodes();
+				}
+
+				$disable_shortcodes = get_option('relevanssi_disable_shortcodes');
+				$shortcodes = explode(',', $disable_shortcodes);
+				foreach ($shortcodes as $shortcode) {
+					remove_shortcode(trim($shortcode));
+				}
 				remove_shortcode('contact-form');		// Jetpack Contact Form causes an error message
+				
+				$post_before_shortcode = $post;
 				$contents = do_shortcode($contents);
+				$post = $post_before_shortcode;
+				
+				if (defined('TABLEPRESS_ABSPATH') || defined('WP_TABLE_RELOADED_ABSPATH')) {
+					unset($My_WP_Table_Reloaded);
+				}
 			}
 		}
 		else {
@@ -594,6 +607,9 @@ function relevanssi_comment_index($comID,$action="add") {
 
 function relevanssi_get_comments($postID) {	
 	global $wpdb;
+
+	if (apply_filters('relevanssi_index_comments_exclude', false, $postID))
+		return "";
 
 	$comtype = get_option("relevanssi_index_comments");
 	$restriction = "";
